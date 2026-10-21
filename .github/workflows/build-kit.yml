@@ -172,6 +172,7 @@ jobs:
           Get-ChildItem out/windows-x64
           $usage = (& out/windows-x64/hactool.exe 2>&1 | Out-String)
           if ($usage -notmatch 'Usage') { Write-Output $usage; exit 1 }
+          exit 0   # hactool without arguments exits non-zero after printing its usage
       - name: Python packages as wheels (installed offline by the builder)
         run: python -m pip wheel -q -r mng/games/totk/requirements.txt -w kit/wheels
       - uses: actions/download-artifact@v4
