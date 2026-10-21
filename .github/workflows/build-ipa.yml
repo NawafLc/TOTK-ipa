@@ -1,0 +1,111 @@
+name: Build TOTK IPA
+
+# Builds an unsigned iPhone/iPad IPA with MacNativeGames (github.com/ly05010419/MacNativeGames) from YOUR OWN
+# game dump and keys. This repository is public, so the IPA (which contains the game) is never uploaded as a
+# workflow artifact: it is sent to private storage you control (IPA_UPLOAD_URL).
+#
+# Repository secrets (Settings > Secrets and variables > Actions):
+#   GAME_URL        direct download link to your base game 1.0.0 (.xci or .nsp)
+#   PROD_KEYS       the full text of your prod.keys
+#   IPA_UPLOAD_URL  a URL the IPA is PUT to (for example a presigned S3 / R2 / B2 upload URL)
+#   UPDATE_URL      optional: direct download link to your update NSP (1.4.3 is the one tested on iOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner label (needs macOS 26 on Apple silicon; a larger runner gives more disk)
+        default: macos-26
+      macnativegames_ref:
+        description: MacNativeGames branch, tag or commit
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  ipa:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 360
+    steps:
+      - name: Check secrets
+        env:
+          GAME_URL: ${{ secrets.GAME_URL }}
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+          IPA_UPLOAD_URL: ${{ secrets.IPA_UPLOAD_URL }}
+        run: |
+          missing=""
+          [ -n "$GAME_URL" ] || missing="$missing GAME_URL"
+          [ -n "$PROD_KEYS" ] || missing="$missing PROD_KEYS"
+          [ -n "$IPA_UPLOAD_URL" ] || missing="$missing IPA_UPLOAD_URL"
+          if [ -n "$missing" ]; then echo "::error::missing repository secrets:$missing"; exit 1; fi
+
+      - name: Free disk space (the iOS build needs 45-60 GB)
+        run: |
+          df -h /
+          # keep only the selected Xcode; drop simulators, Android and other SDKs the build does not use
+          current="$(xcode-select -p | sed 's#/Contents/Developer##')"
+          for x in /Applications/Xcode*.app; do [ "$x" = "$current" ] || sudo rm -rf "$x"; done
+          xcrun simctl delete all 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Profiles/Runtimes \
+            ~/Library/Android /usr/local/share/android-sdk "$ANDROID_HOME" ~/.dotnet /usr/local/share/dotnet \
+            ~/hostedtoolcache/CodeQL /Users/runner/hostedtoolcache/CodeQL 2>/dev/null || true
+          df -h /
+
+      - name: Install build tools
+        run: |
+          brew install opus libvpx python@3.14 xcodegen cmake ninja
+          xcodebuild -version
+          xcodebuild -downloadComponent MetalToolchain || echo "Metal toolchain not downloaded; shaders compile at first launch"
+
+      - name: Fetch MacNativeGames
+        run: |
+          git clone https://github.com/ly05010419/MacNativeGames "$RUNNER_TEMP/MacNativeGames"
+          git -C "$RUNNER_TEMP/MacNativeGames" checkout "${{ inputs.macnativegames_ref }}"
+
+      - name: Download your game and keys
+        env:
+          GAME_URL: ${{ secrets.GAME_URL }}
+          UPDATE_URL: ${{ secrets.UPDATE_URL }}
+          PROD_KEYS: ${{ secrets.PROD_KEYS }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/game" "$RUNNER_TEMP/keys"
+          umask 077
+          printf '%s\n' "$PROD_KEYS" > "$RUNNER_TEMP/keys/prod.keys"
+          # keep the extension the build uses to tell XCI from NSP
+          ext="$(curl -sSIL "$GAME_URL" | tr -d '\r' | grep -io 'filename="\?[^";]*' | tail -1 | grep -io '\.\(xci\|nsp\)$' || true)"
+          [ -n "$ext" ] || ext="$(echo "${GAME_URL%%\?*}" | grep -io '\.\(xci\|nsp\)$' || echo .xci)"
+          curl -fL --retry 5 -o "$RUNNER_TEMP/game/base$ext" "$GAME_URL"
+          echo "GAME_FILE=$RUNNER_TEMP/game/base$ext" >> "$GITHUB_ENV"
+          if [ -n "$UPDATE_URL" ]; then
+            uext="$(echo "${UPDATE_URL%%\?*}" | grep -io '\.\(nsp\|nsz\)$' || echo .nsp)"
+            curl -fL --retry 5 -o "$RUNNER_TEMP/game/update$uext" "$UPDATE_URL"
+            echo "UPDATE_FILE=$RUNNER_TEMP/game/update$uext" >> "$GITHUB_ENV"
+          fi
+          ls -lh "$RUNNER_TEMP/game"
+          df -h /
+
+      - name: Build the IPA
+        working-directory: ${{ runner.temp }}/MacNativeGames
+        run: |
+          args=("$GAME_FILE" -k "$RUNNER_TEMP/keys/prod.keys" --platform ios --no-shader-reminder
+                -o "$RUNNER_TEMP/out/Tears of the Kingdom.ipa" --work "$RUNNER_TEMP/game/TOTK_build")
+          [ -z "${UPDATE_FILE:-}" ] || args+=(--update "$UPDATE_FILE")
+          mkdir -p "$RUNNER_TEMP/out"
+          "$(brew --prefix python@3.14)/bin/python3.14" build_app.py "${args[@]}"
+
+      - name: Build logs on failure (no keys or game data)
+        if: failure()
+        run: find "$RUNNER_TEMP/game/TOTK_build" -name '*.log' -exec tail -n 40 {} + 2>/dev/null || true
+
+      - name: Free the work folder before upload
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys" "$RUNNER_TEMP/game"
+
+      - name: Upload the IPA to your private storage
+        env:
+          IPA_UPLOAD_URL: ${{ secrets.IPA_UPLOAD_URL }}
+        run: |
+          ls -lh "$RUNNER_TEMP/out"
+          curl -fS --retry 3 -T "$RUNNER_TEMP/out/Tears of the Kingdom.ipa" "$IPA_UPLOAD_URL" -o /dev/null
+          echo "Uploaded."
