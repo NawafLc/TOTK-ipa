@@ -1,6 +1,6 @@
 # TOTK-ipa kit
 
-Make a Tears of the Kingdom IPA for iPhone and iPad from **your own** game dump and keys, on Linux, Windows (WSL) or a
+Make a Tears of the Kingdom IPA for iPhone and iPad from **your own** game dump and keys, on Windows, Linux or a
 Mac. The kit is built by GitHub without any game file. Your dump and `prod.keys` stay on your computer.
 
 It is built on [MacNativeGames](https://github.com/ly05010419/MacNativeGames), which does the real work: it rewrites the
@@ -70,7 +70,7 @@ Sign and install the IPA with your sideloading tool, keeping its entitlements: t
 
 ## Building the kit (maintainers)
 
-The kit is built by the **Build TOTK-ipa kit** workflow (Actions → Run workflow). It does three things:
+The kit is built by the **Build TOTK-ipa kit** workflow (Actions → Run workflow). It builds:
 
 - **App shell:** on a macOS 26 machine it builds MacNativeGames' iOS app with `kit/build_shell.py`.
 - **Helper tools:** it builds hactool, SPIRV-Cross and the shader translator for Linux, macOS and Windows with
