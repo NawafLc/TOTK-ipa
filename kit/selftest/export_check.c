@@ -7,7 +7,7 @@
 #include <string.h>
 void runtime_game_patches(Module *m);
 _Noreturn void runtime_fail(const char *message) { fprintf(stderr, "FAIL: %s\n", message); exit(1); }
-void runtime_oe_push_message(int message) { (void)message; }
+void runtime_oe_push_message(uint32_t message) { (void)message; }
 int mfxup_output_enabled(void) { return 0; }
 void dm_gfx_set_flag(const char *name, int on) { (void)name; (void)on; }
 void runtime_survey_init(Module *m) { (void)m; }
