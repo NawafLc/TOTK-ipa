@@ -1,0 +1,176 @@
+name: Build TOTK-ipa kit
+
+# Builds everything the iPhone/iPad app needs that does NOT come from the game: the app shell (MacNativeGames' iOS app
+# with empty game-module sections, on a Mac) and the import tool's helpers for Linux and macOS. No game file and no key
+# is used or needed here. Players run kit/totk_import.py with their own dump to make the IPA on their computer.
+
+on:
+  workflow_dispatch:
+    inputs:
+      macnativegames_ref:
+        description: MacNativeGames branch, tag or commit to build from
+        default: main
+      release:
+        description: Publish the kits as a GitHub release
+        type: boolean
+        default: true
+  push:
+    branches: ['**']
+    paths: ['kit/**', '.github/workflows/build-kit.yml']
+
+permissions:
+  contents: read
+
+env:
+  MNG_URL: https://github.com/ly05010419/MacNativeGames
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        run: |
+          ref="${{ inputs.macnativegames_ref || 'main' }}"
+          sha="$(git ls-remote "$MNG_URL" "$ref" "refs/heads/$ref" "refs/tags/$ref" | head -1 | cut -f1)"
+          [ -n "$sha" ] || sha="$ref"
+          echo "MacNativeGames $ref = $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  selftest-linux:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch MacNativeGames
+        run: git init -q mng && git -C mng fetch -q --depth 1 "$MNG_URL" ${{ needs.resolve.outputs.sha }} && git -C mng checkout -q FETCH_HEAD
+      - name: totk-late.bin written in Python, read by the app's C reader
+        run: python3 kit/selftest/late_roundtrip.py mng
+      - name: Mach-O fill and re-sign on an lld-linked placeholder executable
+        run: |
+          sudo apt-get install -y -q lld >/dev/null
+          LLD="$(ls /usr/bin/ld64.lld* /usr/lib/llvm-*/bin/ld64.lld 2>/dev/null | head -1)"
+          printf 'int counter = 3;\nint *p = &counter;\nint start(void) { return *p; }\n' > t.c
+          clang -target arm64-apple-ios26.0 -c t.c -o t.o
+          clang -target arm64-apple-ios26.0 -c kit/shim/embed.S -o e.o
+          "$LLD" -arch arm64 -platform_version ios 26.0 26.0 -e _start -o t.bin t.o e.o -fixup_chains -adhoc_codesign -pie \
+            -segprot __TOTKmainW rw rw -segprot __TOTKsubsdk0W rw rw -segprot __TOTKsdkW rw rw -segprot __TOTKX r-x r-x
+          python3 kit/selftest/macho_check.py t.bin
+
+  tools-linux:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Fetch MacNativeGames
+        run: git init -q mng && git -C mng fetch -q --depth 1 "$MNG_URL" ${{ needs.resolve.outputs.sha }} && git -C mng checkout -q FETCH_HEAD
+      - name: Build hactool, SPIRV-Cross and the shader translator
+        run: |
+          sudo apt-get install -y -q clang zlib1g-dev >/dev/null
+          python kit/build_tools.py mng out/linux-x64
+          file out/linux-x64/*
+          out/linux-x64/spirv-cross --help >/dev/null 2>&1 || true
+          out/linux-x64/hactool 2>&1 | head -3 || true
+      - run: tar -C out -czf tools-linux-x64.tar.gz linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-linux-x64
+          path: tools-linux-x64.tar.gz
+
+  shell-macos:
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Fetch MacNativeGames
+        run: git init -q mng && git -C mng fetch -q --depth 1 "$MNG_URL" ${{ needs.resolve.outputs.sha }} && git -C mng checkout -q FETCH_HEAD
+      - name: Tools for the iOS build
+        run: |
+          brew install xcodegen cmake ninja
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - name: Build the app shell (no game files)
+        run: python kit/build_shell.py mng out/shell
+      - name: Upload build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-logs
+          path: out/shell-work/logs
+      - name: Shell layout
+        run: |
+          python kit/tools/macho.py info out/shell/v143/TOTK.app/TOTK
+          codesign -d --entitlements - --xml out/shell/v143/TOTK.app/TOTK
+      - name: The Python 1.4.3 export matches MacNativeGames' C patches
+        run: |
+          clang -std=gnu11 -O1 -Wall -DTOTK_GAME_V143=1 -Imng/games/totk/runtime mng/games/totk/runtime/game_patches_v143.c \
+            kit/selftest/export_check.c -o export_check
+          python kit/selftest/check_export.py ./export_check
+      - name: Filling the real shell keeps a valid signature
+        run: python kit/selftest/macho_check.py out/shell/v143/TOTK.app/TOTK
+      - name: Build hactool, SPIRV-Cross and the shader translator for macOS
+        run: python kit/build_tools.py mng out/tools/macos-arm64
+      - run: |
+          tar -C out/shell -czf shell.tar.gz v143
+          tar -C out/tools -czf tools-macos-arm64.tar.gz macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shell
+          path: shell.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tools-macos-arm64
+          path: tools-macos-arm64.tar.gz
+
+  package:
+    needs: [resolve, selftest-linux, tools-linux, shell-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: art
+      - name: Assemble the kits
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          git init -q mng && git -C mng fetch -q --depth 1 "$MNG_URL" "$SHA" && git -C mng checkout -q FETCH_HEAD
+          for plat in linux-x64 macos-arm64; do
+            k="kits/totk-ipa-kit-$plat"
+            mkdir -p "$k/MacNativeGames/games" "$k/shell" "$k/bin" "$k/tools"
+            cp kit/totk_import.py "$k/" && cp kit/tools/*.py "$k/tools/" && cp kit/README.md "$k/README.md"
+            cp mng/build_app.py mng/LICENSE mng/THIRD_PARTY_NOTICES.md "$k/MacNativeGames/"
+            cp -R mng/games/totk mng/games/botw "$k/MacNativeGames/games/"
+            rm -rf "$k/MacNativeGames/games/totk/prebuilt"
+            echo "$SHA" > "$k/MacNativeGames/.kit-commit"
+            tar -C "$k/shell" -xzf art/shell/shell.tar.gz
+            tar -C "$k/bin" -xzf "art/tools-$plat/tools-$plat.tar.gz"
+            tar -C kits -czf "totk-ipa-kit-$plat.tar.gz" "totk-ipa-kit-$plat"
+          done
+          ls -lh totk-ipa-kit-*.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: totk-ipa-kits
+          path: totk-ipa-kit-*.tar.gz
+      - name: Publish a release
+        if: github.event_name == 'workflow_dispatch' && inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+        run: |
+          tag="kit-$(date -u +%Y%m%d)-${SHA:0:7}"
+          gh release create "$tag" totk-ipa-kit-*.tar.gz --target "$GITHUB_SHA" --title "TOTK-ipa kit ($tag)" \
+            --notes "App shell and import tools built from MacNativeGames ${SHA}. Contains no game files: run totk_import.py with your own dump (see README)."
