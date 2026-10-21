@@ -1,0 +1,18 @@
+TOTK IPA Builder
+
+This program builds an iPhone/iPad app (IPA) of The Legend of Zelda: Tears of the Kingdom from YOUR OWN game files:
+the base game and the 1.4.3 update dumped from your Nintendo Switch, and the prod.keys from the same console. It
+contains no game content and downloads none. Everything is done on this computer; nothing is uploaded.
+
+You must own the game. The IPA you build contains the game made from your files: it is for your own use only. Do not
+share it.
+
+Not affiliated with, endorsed by, or sponsored by Nintendo. The Legend of Zelda and Nintendo Switch are trademarks of
+Nintendo.
+
+The game runs through MacNativeGames (https://github.com/ly05010419/MacNativeGames, MIT license); see
+kit\MacNativeGames\LICENSE and kit\MacNativeGames\THIRD_PARTY_NOTICES.md after installing. Included tools: Python
+(PSF license), hactool (ISC license), SPIRV-Cross (Apache 2.0), the Ryujinx shader translator (MIT), and the Python
+packages cryptography, lz4, capstone and nsz with their dependencies (their licenses are in their wheels).
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.

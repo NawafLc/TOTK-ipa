@@ -133,8 +133,88 @@ jobs:
           name: tools-macos-arm64
           path: tools-macos-arm64.tar.gz
 
+  windows:
+    needs: [resolve, shell-macos]
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          architecture: x64
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: false
+          install: make patch mingw-w64-x86_64-gcc
+      - name: Fetch MacNativeGames
+        run: |
+          git init -q mng
+          git -C mng fetch -q --depth 1 $env:MNG_URL ${{ needs.resolve.outputs.sha }}
+          git -C mng checkout -q FETCH_HEAD
+      - name: Build hactool, SPIRV-Cross and the shader translator for Windows
+        run: |
+          $msys = "${{ steps.msys2.outputs.msys2-location }}"
+          $env:PATH = "$msys\mingw64\bin;$env:PATH;$msys\usr\bin"
+          python kit/build_tools.py mng out/windows-x64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem out/windows-x64
+          $usage = (& out/windows-x64/hactool.exe 2>&1 | Out-String)
+          if ($usage -notmatch 'Usage') { Write-Output $usage; exit 1 }
+      - name: Python packages as wheels (installed offline by the builder)
+        run: python -m pip wheel -q -r mng/games/totk/requirements.txt -w kit/wheels
+      - uses: actions/download-artifact@v4
+        with:
+          name: shell
+      - name: Put the kit together
+        run: |
+          New-Item -ItemType Directory -Force kit/shell, kit/bin, kit/MacNativeGames/games | Out-Null
+          tar -xzf shell.tar.gz -C kit/shell
+          Copy-Item -Recurse out/windows-x64 kit/bin/windows-x64
+          Copy-Item mng/build_app.py, mng/LICENSE, mng/THIRD_PARTY_NOTICES.md kit/MacNativeGames/
+          Copy-Item -Recurse mng/games/totk, mng/games/botw kit/MacNativeGames/games/
+          Remove-Item -Recurse -Force kit/MacNativeGames/games/totk/prebuilt
+          Set-Content kit/MacNativeGames/.kit-commit "${{ needs.resolve.outputs.sha }}"
+      - name: Self-test - environment, embedding and IPA on Windows (synthetic game files)
+        run: python kit/selftest/assemble_check.py mng kit/shell/v143/TOTK.app
+      - name: Self-test - the builder window
+        run: python kit/selftest/gui_check.py
+      - name: Installer
+        run: |
+          $dist = "dist"
+          New-Item -ItemType Directory -Force "$dist/kit/tools" | Out-Null
+          Copy-Item kit/totk_import.py, kit/gui.py, kit/README.md, kit/windows/NOTICE.txt "$dist/kit/"
+          Copy-Item kit/tools/*.py "$dist/kit/tools/"
+          foreach ($d in 'MacNativeGames', 'shell', 'bin', 'wheels') { Copy-Item -Recurse "kit/$d" "$dist/kit/$d" }
+          # a private copy of this Python 3.14 (python.org build, with tkinter, venv and ensurepip)
+          $py = Split-Path (Get-Command python).Source
+          Copy-Item -Recurse $py "$dist/python"
+          Remove-Item -Recurse -Force "$dist/python/Lib/test", "$dist/python/Lib/site-packages/*" -ErrorAction SilentlyContinue
+          Get-ChildItem -Recurse -Directory -Filter __pycache__ $dist | Remove-Item -Recurse -Force
+          & "$dist/python/python.exe" -c "import tkinter, venv, ensurepip, sys; print(sys.version)"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $version = "1.0.$env:GITHUB_RUN_NUMBER"
+          & $iscc "/DSourceDir=$(Resolve-Path $dist)" "/DAppVersion=$version" /Oout kit/windows/installer.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem out/TOTK-ipa-Setup.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: out/TOTK-ipa-Setup.exe
+
   package:
-    needs: [resolve, selftest-linux, tools-linux, shell-macos]
+    needs: [resolve, selftest-linux, tools-linux, shell-macos, windows]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -151,7 +231,7 @@ jobs:
           for plat in linux-x64 macos-arm64; do
             k="kits/totk-ipa-kit-$plat"
             mkdir -p "$k/MacNativeGames/games" "$k/shell" "$k/bin" "$k/tools"
-            cp kit/totk_import.py "$k/" && cp kit/tools/*.py "$k/tools/" && cp kit/README.md "$k/README.md"
+            cp kit/totk_import.py kit/gui.py "$k/" && cp kit/tools/*.py "$k/tools/" && cp kit/README.md "$k/README.md"
             cp mng/build_app.py mng/LICENSE mng/THIRD_PARTY_NOTICES.md "$k/MacNativeGames/"
             cp -R mng/games/totk mng/games/botw "$k/MacNativeGames/games/"
             rm -rf "$k/MacNativeGames/games/totk/prebuilt"
@@ -172,5 +252,6 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
         run: |
           tag="kit-$(date -u +%Y%m%d)-${SHA:0:7}"
-          gh release create "$tag" totk-ipa-kit-*.tar.gz --target "$GITHUB_SHA" --title "TOTK-ipa kit ($tag)" \
-            --notes "App shell and import tools built from MacNativeGames ${SHA}. Contains no game files: run totk_import.py with your own dump (see README)."
+          gh release create "$tag" art/windows-installer/TOTK-ipa-Setup.exe totk-ipa-kit-*.tar.gz --target "$GITHUB_SHA" \
+            --title "TOTK-ipa kit ($tag)" \
+            --notes "Windows: run TOTK-ipa-Setup.exe; the builder asks for your game files and makes the IPA. Linux / macOS: the kits, with totk_import.py. Built from MacNativeGames ${SHA}. Contains no game files."

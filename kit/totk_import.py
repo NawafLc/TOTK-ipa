@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""TOTK-ipa import: turn your own Tears of the Kingdom dump and prod.keys into an iPhone/iPad IPA, on Linux (also WSL on
-Windows) or a Mac, with the app shell built by GitHub (no game files ever leave your computer).
+"""TOTK-ipa import: turn your own Tears of the Kingdom dump and prod.keys into an iPhone/iPad IPA, on Windows, Linux or a
+Mac, with the app shell built by GitHub (no game files ever leave your computer). On Windows the installer's builder
+window (kit/gui.py) runs this script.
 
     python3.14 totk_import.py <base 1.0.0 .xci|.nsp> --update <1.4.3 .nsp|.nsz> -k <prod.keys> [-o TOTK.ipa]
                               [--firmware <dir> | --shared-fonts <dir>]   (an NSP base game has no system fonts)
@@ -27,6 +28,8 @@ import export_v143, late_config, macho
 
 VERSION = 'v143'
 NAMES = late_config.NAMES
+WINDOWS = sys.platform == 'win32'
+EXE = '.exe' if WINDOWS else ''
 
 
 def say(msg):
@@ -36,12 +39,51 @@ def say(msg):
 def tool_dir():
     machine = platform.machine().lower()
     arch = {'x86_64': 'x64', 'amd64': 'x64', 'arm64': 'arm64', 'aarch64': 'arm64'}.get(machine, machine)
-    system = {'linux': 'linux', 'darwin': 'macos'}.get(sys.platform)
+    system = {'linux': 'linux', 'darwin': 'macos', 'win32': 'windows'}.get(sys.platform)
     folder = KIT / 'bin' / f'{system}-{arch}'
     if not system or not folder.is_dir():
         have = ', '.join(p.name for p in (KIT / 'bin').iterdir()) if (KIT / 'bin').is_dir() else 'none'
-        raise SystemExit(f'this kit has no tools for {sys.platform}/{machine} (it has: {have}); on Windows run it in WSL')
+        raise SystemExit(f'this kit has no tools for {sys.platform}/{machine} (it has: {have})')
     return folder
+
+
+def is_link(path):
+    return path.is_symlink() or (WINDOWS and path.is_junction())
+
+
+def dir_link(link, target):
+    """A link to a directory: a junction on Windows (symbolic links need extra rights there)."""
+    if is_link(link):
+        os.rmdir(link) if WINDOWS and link.is_junction() else link.unlink()
+    elif link.exists():
+        shutil.rmtree(link)
+    if WINDOWS:
+        subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)], check=True, stdout=subprocess.DEVNULL)
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+def prepare_venv(venv, requirements, logs):
+    """The Python environment MacNativeGames' scripts run in, as <tree>/.venv/bin/python expects it. On Windows venv/bin
+    is a junction to venv/Scripts, so build_app.py's '.venv/bin/python' and '.venv/bin/nsz' start python.exe and nsz.exe.
+    The packages come from the kit's wheels when it has them (the Windows installer does), else from PyPI."""
+    python = venv / ('Scripts/python.exe' if WINDOWS else 'bin/python')
+    if not python.exists():
+        say('Python environment for the build tools (one time)')
+        subprocess.run([sys.executable, '-m', 'venv', venv], check=True)
+    if WINDOWS and not (venv / 'bin').exists():
+        dir_link(venv / 'bin', venv / 'Scripts')
+    marker = venv / '.requirements'
+    req = requirements.read_text()
+    if not marker.exists() or marker.read_text() != req:
+        wheels = KIT / 'wheels'
+        source = ['--no-index', '--find-links', wheels] if wheels.is_dir() else []
+        with (logs / 'pip.log').open('w') as log:
+            if subprocess.run([python, '-m', 'pip', 'install', '-q', *source, '-r', requirements],
+                              stdout=log, stderr=subprocess.STDOUT).returncode:
+                raise SystemExit(f'could not install the build tools\' Python packages; see {logs / "pip.log"}')
+        marker.write_text(req)
+    return venv
 
 
 def prepare_tree(work, logs):
@@ -57,27 +99,14 @@ def prepare_tree(work, logs):
             if item.name in keep:
                 continue
             target = tree / item.name
-            if target.is_dir() and not target.is_symlink():
+            if target.is_dir() and not is_link(target):
                 shutil.rmtree(target)
-            elif target.exists() or target.is_symlink():
+            elif target.exists() or is_link(target):
                 target.unlink()
             (shutil.copytree if item.is_dir() else shutil.copy2)(item, target)
         stamp.write_text(source + '\n')
-    venv = work / 'venv'
-    if not (venv / 'bin/python').exists():
-        say('Python environment for the build tools (one time)')
-        subprocess.run([sys.executable, '-m', 'venv', venv], check=True)
-    marker = venv / '.requirements'
-    req = (tree / 'requirements.txt').read_text()
-    if not marker.exists() or marker.read_text() != req:
-        with (logs / 'pip.log').open('w') as log:
-            subprocess.run([venv / 'bin/python', '-m', 'pip', 'install', '-q', '-r', tree / 'requirements.txt'],
-                           check=True, stdout=log, stderr=subprocess.STDOUT)
-        marker.write_text(req)
-    link = tree / '.venv'
-    if link.is_symlink() or link.exists():
-        link.unlink()
-    link.symlink_to(venv, target_is_directory=True)
+    venv = prepare_venv(work / 'venv', tree / 'requirements.txt', logs)
+    dir_link(tree / '.venv', venv)
     for name in ('analysis', 'build'):
         (tree / name).mkdir(exist_ok=True)
     return tree
@@ -85,7 +114,7 @@ def prepare_tree(work, logs):
 
 def prepare_seed(tree, bins, logs):
     """build_app.step_shaders with this computer's translator and SPIRV-Cross (built by the kit's workflow)."""
-    translator, spirv = bins / 'totk_xlate', bins / 'spirv-cross'
+    translator, spirv = bins / f'totk_xlate{EXE}', bins / f'spirv-cross{EXE}'
     say('3/4 shaders: discovering and translating startup shaders from your game data (several minutes)')
     with (logs / 'prepare-shader-seed.log').open('w') as log:
         p = subprocess.run([tree / '.venv/bin/python', 'scripts/prepare_shader_seed.py',
@@ -169,17 +198,21 @@ def write_ipa(payload, out):
     say(f'4/4 app: writing {out} (stored, not compressed: about 18 GB)')
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.name + '.partial')
+    executable = payload / 'Payload/TOTK.app/TOTK'
     with zipfile.ZipFile(tmp, 'w', zipfile.ZIP_STORED, allowZip64=True) as z:
         for path in sorted(payload.rglob('*')):
             rel = path.relative_to(payload).as_posix()
-            if path.is_symlink():
-                info = zipfile.ZipInfo(rel)
-                info.external_attr = (0o120777 << 16)
-                z.writestr(info, os.readlink(path))
-            elif path.is_dir():
-                z.write(path, rel + '/')
-            else:
-                z.write(path, rel)
+            # Unix modes set explicitly: a Windows file has no executable bit, and iOS needs it on the app's executable
+            info = zipfile.ZipInfo(rel + ('/' if path.is_dir() else ''), time.localtime(path.stat().st_mtime)[:6])
+            info.create_system = 3
+            if path.is_dir():
+                info.external_attr = (0o40755 << 16) | 0x10
+                z.writestr(info, b'')
+                continue
+            info.external_attr = (0o100755 if path == executable else 0o100644) << 16
+            info.compress_type = zipfile.ZIP_STORED
+            with path.open('rb') as src, z.open(info, 'w', force_zip64=True) as dst:
+                shutil.copyfileobj(src, dst, 8 << 20)
     tmp.replace(out)
 
 
@@ -219,13 +252,17 @@ def main(argv):
                          '--shared-fonts <folder with the six .bfttf files>')
     work.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(work).free / 2**30
-    if free < 60 and not (work / f'totk/extracted/{VERSION}/romfs/romfs.bin').exists():
-        raise SystemExit(f'needs about 60 GB free in {work} (has {free:.0f} GB)')
+    need = 80 if WINDOWS else 60   # Windows: hactool works on a temporary copy of the base program NCA
+    if free < need and not (work / f'totk/extracted/{VERSION}/romfs/romfs.bin').exists():
+        raise SystemExit(f'needs about {need} GB free in {work} (has {free:.0f} GB)')
     logs = work / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     tree = prepare_tree(work, logs)
-    B.build_hactool = lambda tree, logs: bins / 'hactool'   # built by the kit's workflow for this computer
+    B.build_hactool = lambda tree, logs: bins / f'hactool{EXE}'   # built by the kit's workflow for this computer
+    if WINDOWS:   # hactool's temporary copy of the base program NCA (17 GB) goes into the work folder, not C:\\
+        (work / 'tmp').mkdir(exist_ok=True)
+        os.environ['TMP'] = os.environ['TEMP'] = str(work / 'tmp')
     env = dict(os.environ)
     try:
         if B.identify_game(tree, game, keys, logs) != 'totk':
