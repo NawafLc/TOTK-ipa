@@ -57,9 +57,9 @@ static FILE *mng_open_base(const char *path) {
 '''
 
 
-def sh(args, cwd=None):
+def sh(args, cwd=None, env=None):
     print('+', ' '.join(str(a) for a in args), flush=True)
-    subprocess.run([str(a) for a in args], cwd=cwd, check=True)
+    subprocess.run([str(a) for a in args], cwd=cwd, check=True, env=env)
 
 
 def main():
@@ -139,10 +139,10 @@ def main():
         for d in (x / 'ryujinx-src/src').glob('*/'):
             for sub in ('obj', 'bin'):
                 shutil.rmtree(d / sub, ignore_errors=True)
-        for p in sorted((here / 'patches').glob('*.patch')):
-            with p.open('rb') as f:
-                print('+ patch', p.name, flush=True)
-                subprocess.run(['patch', '-s', '-d', x / 'ryujinx-src', '-p1', '--forward'], stdin=f, check=True)
+        for p in sorted((here / 'patches').glob('*.patch')):   # git apply: the same on every system (publish_native.sh uses patch)
+            # outside any repository (else git apply takes the paths relative to the enclosing checkout)
+            sh(['git', 'apply', '-p1', '--whitespace=nowarn', p], cwd=x / 'ryujinx-src',
+               env=dict(os.environ, GIT_CEILING_DIRECTORIES=str(x)))
         (x / 'app').mkdir()
         for f in list(here.glob('*.cs')) + [here / 'totk_xlate.csproj']:
             shutil.copy2(f, x / 'app' / f.name)
