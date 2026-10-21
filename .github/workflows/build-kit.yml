@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
     inputs:
       macnativegames_ref:
-        description: MacNativeGames branch, tag or commit to build from
-        default: main
+        description: MacNativeGames commit, tag or branch (empty = the commit pinned in kit/MNG_COMMIT, which the self-tests have passed with)
+        default: ''
       release:
         description: Publish the kits as a GitHub release
         type: boolean
@@ -30,9 +30,11 @@ jobs:
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
     steps:
+      - uses: actions/checkout@v4
       - id: sha
         run: |
-          ref="${{ inputs.macnativegames_ref || 'main' }}"
+          ref="${{ inputs.macnativegames_ref }}"
+          [ -n "$ref" ] || ref="$(cat kit/MNG_COMMIT)"
           sha="$(git ls-remote "$MNG_URL" "$ref" "refs/heads/$ref" "refs/tags/$ref" | head -1 | cut -f1)"
           [ -n "$sha" ] || sha="$ref"
           echo "MacNativeGames $ref = $sha"

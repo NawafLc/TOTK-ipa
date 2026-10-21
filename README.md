@@ -10,7 +10,8 @@ computer, and you sideload it.
 - **Windows players:** download `TOTK-ipa-Setup.exe` from Releases and run it. The builder it installs asks for your
   game files and makes the IPA.
 - **Linux and Mac players:** download the kit from Releases and follow [kit/README.md](kit/README.md).
-- **Maintainers:** run the **Build TOTK-ipa kit** workflow in Actions to build and publish the kit.
+- **Maintainers:** run the **Build TOTK-ipa kit** workflow in Actions to build and publish the kit. It builds from the
+  MacNativeGames commit in `kit/MNG_COMMIT`; to move to a newer one, change that file and let the self-tests confirm.
 
 Based on [MacNativeGames](https://github.com/ly05010419/MacNativeGames) (MIT). Not affiliated with Nintendo. You must
 own the game; the IPA you make contains it and is for your own use only.

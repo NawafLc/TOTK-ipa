@@ -11,6 +11,7 @@ void runtime_oe_push_message(uint32_t message) { (void)message; }
 int mfxup_output_enabled(void) { return 0; }
 void dm_gfx_set_flag(const char *name, int on) { (void)name; (void)on; }
 void runtime_survey_init(Module *m) { (void)m; }
+void *runtime_symbol(const char *name) { (void)name; return NULL; }   /* Vert+ only (TOTK_ASPECT_VERT), off here */
 int main(int argc, char **argv) {
     if (argc != 4) return 2;
     FILE *f = fopen(argv[1], "rb"); if (!f) return 2;
