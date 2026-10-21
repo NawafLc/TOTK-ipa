@@ -25,8 +25,13 @@ def symbols(data, m):
 def main():
     src = Path(sys.argv[1])
     with tempfile.TemporaryDirectory() as tmp:
-        exe = Path(tmp) / src.name
-        shutil.copy2(src, exe)
+        # the signature binds the bundle's Info.plist: check the executable inside a copy of its .app
+        if src.parent.suffix == '.app':
+            shutil.copytree(src.parent, Path(tmp) / src.parent.name, symlinks=True)
+            exe = Path(tmp) / src.parent.name / src.name
+        else:
+            exe = Path(tmp) / src.name
+            shutil.copy2(src, exe)
         before = macho.MachO(exe.read_bytes())
         contents = {k: os.urandom(v) for k, v in SIZES.items()}
         macho.fill(exe, contents)
